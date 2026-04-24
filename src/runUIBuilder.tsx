@@ -1,6 +1,15 @@
 // src/runUIBuilder.tsx
 import { bitable, UIBuilder } from "@lark-base-open/js-sdk";
 
+// 将可能为对象 { id: "xxx" } 的值转为字符串ID
+function ensureId(value: any): string {
+  if (!value) return '';
+  if (typeof value === 'string') return value;
+  if (typeof value === 'object' && 'id' in value) return value.id;
+  if (typeof value === 'object' && 'fieldId' in value) return value.fieldId;
+  return String(value);
+}
+
 export default async function main(uiBuilder: UIBuilder, { t }: any) {
   uiBuilder.form(
     (form) => ({
@@ -10,13 +19,13 @@ export default async function main(uiBuilder: UIBuilder, { t }: any) {
           label: '匹配字段（子文件夹名将写入此字段）',
           sourceTable: 'tableId',
           // @ts-ignore
-          filterByTypes: [1],
+          filterByTypes: [1], // 文本类型
         }),
         form.fieldSelect('mainImageFieldId', {
           label: '主图字段（附件）',
           sourceTable: 'tableId',
           // @ts-ignore
-          filterByTypes: [17],
+          filterByTypes: [17], // 附件类型
         }),
         form.fieldSelect('carouselFieldId', {
           label: '轮播图字段（附件）',
@@ -38,32 +47,25 @@ export default async function main(uiBuilder: UIBuilder, { t }: any) {
 
       try {
         const vals = values as any;
-        let {
-          tableId,
-          matchFieldId,
-          mainImageFieldId,
-          carouselFieldId,
-          aplusFieldId,
-        } = vals;
+        let rawTableId = vals.tableId;
+        let rawMatchFieldId = vals.matchFieldId;
+        let rawMainImageFieldId = vals.mainImageFieldId;
+        let rawCarouselFieldId = vals.carouselFieldId;
+        let rawAplusFieldId = vals.aplusFieldId;
 
-        // 调试：打印原始值
-        console.log('原始 values:', vals);
-        uiBuilder.text(`原始 tableId 类型: ${typeof tableId}, 值: ${JSON.stringify(tableId)}`);
+        // 打印原始值以便调试
+        console.log('原始表单值:', vals);
 
-        // 如果 tableId 是对象，提取 id 属性
-        if (tableId && typeof tableId === 'object' && 'id' in tableId) {
-          tableId = tableId.id;
-          uiBuilder.text(`转换后 tableId: ${tableId}`);
-        }
-
+        // 转换ID
+        const tableId = ensureId(rawTableId);
         if (!tableId) {
           uiBuilder.text('❌ 未选择目标表格，请返回并重新选择');
           return;
         }
 
-        // 检查表格是否存在
-        const exists = await bitable.base.isTableExist(tableId);
-        if (!exists) {
+        // 验证表格是否存在
+        const tableExists = await bitable.base.isTableExist(tableId);
+        if (!tableExists) {
           uiBuilder.text(`❌ 表格不存在（ID: ${tableId}），请检查权限或重新选择`);
           return;
         }
@@ -71,7 +73,32 @@ export default async function main(uiBuilder: UIBuilder, { t }: any) {
         const table = await bitable.base.getTableById(tableId);
         uiBuilder.text(`✅ 成功获取表格: ${await table.getName()}`);
 
-        // 创建文件夹选择器
+        // 转换字段ID
+        const matchFieldId = ensureId(rawMatchFieldId);
+        const mainImageFieldId = ensureId(rawMainImageFieldId);
+        const carouselFieldId = ensureId(rawCarouselFieldId);
+        const aplusFieldId = ensureId(rawAplusFieldId);
+
+        // 验证字段是否存在
+        const fieldIdList = await table.getFieldIdList();
+        if (matchFieldId && !fieldIdList.includes(matchFieldId)) {
+          uiBuilder.text(`❌ 匹配字段 ${matchFieldId} 不存在于表格中，请重新选择`);
+          return;
+        }
+        if (mainImageFieldId && !fieldIdList.includes(mainImageFieldId)) {
+          uiBuilder.text(`❌ 主图字段 ${mainImageFieldId} 不存在于表格中，请重新选择`);
+          return;
+        }
+        if (carouselFieldId && !fieldIdList.includes(carouselFieldId)) {
+          uiBuilder.text(`❌ 轮播图字段 ${carouselFieldId} 不存在于表格中，请重新选择`);
+          return;
+        }
+        if (aplusFieldId && !fieldIdList.includes(aplusFieldId)) {
+          uiBuilder.text(`❌ A+ 字段 ${aplusFieldId} 不存在于表格中，请重新选择`);
+          return;
+        }
+
+        // 文件夹选择器（支持子文件夹）
         const fileInput = document.createElement('input');
         fileInput.type = 'file';
         fileInput.webkitdirectory = true;
@@ -95,10 +122,11 @@ export default async function main(uiBuilder: UIBuilder, { t }: any) {
           return;
         }
 
-        // 解析文件夹结构
+        // 解析文件夹结构：按子文件夹分组
         const folderMap = new Map<string, File[]>();
         for (const file of Array.from(files)) {
-          const relativePath = (file as any).webkitRelativePath as string;
+          const relativePath = (file as any).webkitRelativePath;
+          if (!relativePath) continue;
           const parts = relativePath.split('/');
           if (parts.length < 2) continue;
           const subFolderName = parts[0];
@@ -116,6 +144,7 @@ export default async function main(uiBuilder: UIBuilder, { t }: any) {
 
         uiBuilder.showLoading(`正在处理 ${subFolders.length} 个产品，请稍候...`);
 
+        // 分批上传文件（每批最多20个）
         async function uploadFilesInBatches(
           fileList: File[]
         ): Promise<{ file: File; token: string }[]> {
@@ -136,6 +165,7 @@ export default async function main(uiBuilder: UIBuilder, { t }: any) {
         for (const subFolderName of subFolders) {
           const filesInFolder = folderMap.get(subFolderName)!;
 
+          // 按文件名关键词分类
           const mainImages: File[] = [];
           const carouselImages: File[] = [];
           const aplusImages: File[] = [];
@@ -164,23 +194,27 @@ export default async function main(uiBuilder: UIBuilder, { t }: any) {
             images.map((img) => ({ file_token: tokenMap.get(img) }));
 
           const record: any = {
-            fields: {
-              [matchFieldId]: subFolderName,
-            },
+            fields: {}
           };
-          if (mainImages.length) {
+          if (matchFieldId) {
+            record.fields[matchFieldId] = subFolderName;
+          }
+          if (mainImageFieldId && mainImages.length) {
             record.fields[mainImageFieldId] = buildAttachmentValue(mainImages);
           }
-          if (carouselImages.length) {
+          if (carouselFieldId && carouselImages.length) {
             record.fields[carouselFieldId] = buildAttachmentValue(carouselImages);
           }
-          if (aplusImages.length) {
+          if (aplusFieldId && aplusImages.length) {
             record.fields[aplusFieldId] = buildAttachmentValue(aplusImages);
           }
 
-          recordsToAdd.push(record);
+          if (Object.keys(record.fields).length > 0) {
+            recordsToAdd.push(record);
+          }
         }
 
+        // 批量写入
         const BATCH_RECORD_SIZE = 500;
         let successCount = 0;
         for (let i = 0; i < recordsToAdd.length; i += BATCH_RECORD_SIZE) {
