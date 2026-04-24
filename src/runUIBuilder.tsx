@@ -34,13 +34,11 @@ export default async function main(uiBuilder: UIBuilder, { t }: any) {
       buttons: ['选择文件夹并上传'],
     }),
     async ({ values }) => {
-      // 调试：告知用户回调已触发
       uiBuilder.text('正在准备文件选择器，请稍候...');
 
       try {
-        // 断言 values
         const vals = values as any;
-        const {
+        let {
           tableId,
           matchFieldId,
           mainImageFieldId,
@@ -48,23 +46,38 @@ export default async function main(uiBuilder: UIBuilder, { t }: any) {
           aplusFieldId,
         } = vals;
 
+        // 调试：打印原始值
+        console.log('原始 values:', vals);
+        uiBuilder.text(`原始 tableId 类型: ${typeof tableId}, 值: ${JSON.stringify(tableId)}`);
+
+        // 如果 tableId 是对象，提取 id 属性
+        if (tableId && typeof tableId === 'object' && 'id' in tableId) {
+          tableId = tableId.id;
+          uiBuilder.text(`转换后 tableId: ${tableId}`);
+        }
+
         if (!tableId) {
-          uiBuilder.text('❌ 未选择目标表格');
+          uiBuilder.text('❌ 未选择目标表格，请返回并重新选择');
           return;
         }
 
-        // 获取表格实例
-        const table = await bitable.base.getTableById(tableId);
+        // 检查表格是否存在
+        const exists = await bitable.base.isTableExist(tableId);
+        if (!exists) {
+          uiBuilder.text(`❌ 表格不存在（ID: ${tableId}），请检查权限或重新选择`);
+          return;
+        }
 
-        // 创建文件选择器（支持文件夹）
+        const table = await bitable.base.getTableById(tableId);
+        uiBuilder.text(`✅ 成功获取表格: ${await table.getName()}`);
+
+        // 创建文件夹选择器
         const fileInput = document.createElement('input');
         fileInput.type = 'file';
-        fileInput.webkitdirectory = true;  // 启用文件夹选择
+        fileInput.webkitdirectory = true;
         fileInput.multiple = true;
-        // 确保存在于 DOM 树中（有些浏览器要求）
         document.body.appendChild(fileInput);
 
-        // 等待用户选择文件夹
         const files = await new Promise<FileList>((resolve, reject) => {
           fileInput.onchange = () => {
             if (fileInput.files && fileInput.files.length > 0) {
@@ -74,7 +87,6 @@ export default async function main(uiBuilder: UIBuilder, { t }: any) {
             }
             document.body.removeChild(fileInput);
           };
-          // 如果用户取消选择，应该 reject 但无法直接捕获，可设置超时
           fileInput.click();
         });
 
@@ -88,7 +100,7 @@ export default async function main(uiBuilder: UIBuilder, { t }: any) {
         for (const file of Array.from(files)) {
           const relativePath = (file as any).webkitRelativePath as string;
           const parts = relativePath.split('/');
-          if (parts.length < 2) continue; // 忽略根目录文件
+          if (parts.length < 2) continue;
           const subFolderName = parts[0];
           if (!folderMap.has(subFolderName)) {
             folderMap.set(subFolderName, []);
@@ -104,7 +116,6 @@ export default async function main(uiBuilder: UIBuilder, { t }: any) {
 
         uiBuilder.showLoading(`正在处理 ${subFolders.length} 个产品，请稍候...`);
 
-        // 分批上传文件
         async function uploadFilesInBatches(
           fileList: File[]
         ): Promise<{ file: File; token: string }[]> {
@@ -170,7 +181,6 @@ export default async function main(uiBuilder: UIBuilder, { t }: any) {
           recordsToAdd.push(record);
         }
 
-        // 批量写入记录
         const BATCH_RECORD_SIZE = 500;
         let successCount = 0;
         for (let i = 0; i < recordsToAdd.length; i += BATCH_RECORD_SIZE) {
