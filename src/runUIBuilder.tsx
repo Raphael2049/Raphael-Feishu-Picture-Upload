@@ -59,25 +59,28 @@ export default async function main(uiBuilder: UIBuilder, { t }: any) {
         const carouselFieldId = ensureId(vals.carouselFieldId);
         const aplusFieldId = ensureId(vals.aplusFieldId);
 
-        // 验证字段存在性
+        // 验证字段存在性及类型
         const fields = await table.getFieldMetaList();
-        const fieldIdSet = new Set(fields.map(f => f.id));
-        if (matchFieldId && !fieldIdSet.has(matchFieldId)) {
-          uiBuilder.text(`❌ 匹配字段不存在，请重新选择`);
+        const fieldMap = new Map(fields.map(f => [f.id, f]));
+        if (matchFieldId && !fieldMap.has(matchFieldId)) {
+          uiBuilder.text(`❌ 匹配字段不存在`);
           return;
         }
-        if (mainFieldId && !fieldIdSet.has(mainFieldId)) {
-          uiBuilder.text(`❌ 主图字段不存在，请重新选择`);
-          return;
-        }
-        if (carouselFieldId && !fieldIdSet.has(carouselFieldId)) {
-          uiBuilder.text(`❌ 轮播图字段不存在，请重新选择`);
-          return;
-        }
-        if (aplusFieldId && !fieldIdSet.has(aplusFieldId)) {
-          uiBuilder.text(`❌ A+ 字段不存在，请重新选择`);
-          return;
-        }
+        const checkFieldType = (id: string, name: string) => {
+          if (!id) return true;
+          const field = fieldMap.get(id);
+          if (!field) {
+            uiBuilder.text(`❌ ${name} 字段不存在`);
+            return false;
+          }
+          if (field.type !== 17) {
+            uiBuilder.text(`⚠️ ${name} 字段类型不是附件（当前类型: ${field.type}），可能无法正常显示图片`);
+          }
+          return true;
+        };
+        if (!checkFieldType(mainFieldId, '主图')) return;
+        if (!checkFieldType(carouselFieldId, '轮播图')) return;
+        if (!checkFieldType(aplusFieldId, 'A+')) return;
 
         // 选择文件夹
         const fileInput = document.createElement('input');
@@ -126,7 +129,11 @@ export default async function main(uiBuilder: UIBuilder, { t }: any) {
             const batch = files.slice(i, i + BATCH);
             const tokens = await bitable.base.batchUploadFile(batch);
             for (let j = 0; j < batch.length; j++) {
-              tokenMap.set(batch[j], tokens[j]);
+              if (tokens[j]) {
+                tokenMap.set(batch[j], tokens[j]);
+              } else {
+                uiBuilder.text(`⚠️ 文件 ${batch[j].name} 上传失败，未返回 token`);
+              }
             }
           }
           return tokenMap;
@@ -151,10 +158,8 @@ export default async function main(uiBuilder: UIBuilder, { t }: any) {
           if (carouselFieldId && carousel.length) fields[carouselFieldId] = build(carousel);
           if (aplusFieldId && aplus.length) fields[aplusFieldId] = build(aplus);
 
-          // 调试：显示将要写入的附件数量
-          let debugMsg = `子文件夹 ${folder}: 主图${main.length}张, 轮播${carousel.length}张, A+${aplus.length}张`;
-          uiBuilder.text(debugMsg);
-          console.log(debugMsg, fields);
+          // 调试：输出附件值
+          console.log(`子文件夹 ${folder}:`, fields);
 
           records.push({ fields });
         }
