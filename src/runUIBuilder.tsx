@@ -11,6 +11,11 @@ function ensureId(value: any): string {
   return String(value);
 }
 
+// 类型守卫：判断字段值是否为附件数组
+function isAttachmentArray(value: any): value is Array<{ file_token: string }> {
+  return Array.isArray(value) && value.every(item => item && typeof item.file_token === 'string');
+}
+
 export default async function main(uiBuilder: UIBuilder, { t }: any) {
   uiBuilder.form(
     (form) => ({
@@ -59,28 +64,25 @@ export default async function main(uiBuilder: UIBuilder, { t }: any) {
         const carouselFieldId = ensureId(vals.carouselFieldId);
         const aplusFieldId = ensureId(vals.aplusFieldId);
 
-        // 验证字段存在性及类型
+        // 验证字段存在性
         const fields = await table.getFieldMetaList();
-        const fieldMap = new Map(fields.map(f => [f.id, f]));
-        if (matchFieldId && !fieldMap.has(matchFieldId)) {
-          uiBuilder.text(`❌ 匹配字段不存在`);
+        const fieldIdSet = new Set(fields.map(f => f.id));
+        if (matchFieldId && !fieldIdSet.has(matchFieldId)) {
+          uiBuilder.text(`❌ 匹配字段不存在，请重新选择`);
           return;
         }
-        const checkFieldType = (id: string, name: string) => {
-          if (!id) return true;
-          const field = fieldMap.get(id);
-          if (!field) {
-            uiBuilder.text(`❌ ${name} 字段不存在`);
-            return false;
-          }
-          if (field.type !== 17) {
-            uiBuilder.text(`⚠️ ${name} 字段类型不是附件（当前类型: ${field.type}），可能无法正常显示图片`);
-          }
-          return true;
-        };
-        if (!checkFieldType(mainFieldId, '主图')) return;
-        if (!checkFieldType(carouselFieldId, '轮播图')) return;
-        if (!checkFieldType(aplusFieldId, 'A+')) return;
+        if (mainFieldId && !fieldIdSet.has(mainFieldId)) {
+          uiBuilder.text(`❌ 主图字段不存在，请重新选择`);
+          return;
+        }
+        if (carouselFieldId && !fieldIdSet.has(carouselFieldId)) {
+          uiBuilder.text(`❌ 轮播图字段不存在，请重新选择`);
+          return;
+        }
+        if (aplusFieldId && !fieldIdSet.has(aplusFieldId)) {
+          uiBuilder.text(`❌ A+ 字段不存在，请重新选择`);
+          return;
+        }
 
         // 选择文件夹
         const fileInput = document.createElement('input');
@@ -129,11 +131,7 @@ export default async function main(uiBuilder: UIBuilder, { t }: any) {
             const batch = files.slice(i, i + BATCH);
             const tokens = await bitable.base.batchUploadFile(batch);
             for (let j = 0; j < batch.length; j++) {
-              if (tokens[j]) {
-                tokenMap.set(batch[j], tokens[j]);
-              } else {
-                uiBuilder.text(`⚠️ 文件 ${batch[j].name} 上传失败，未返回 token`);
-              }
+              tokenMap.set(batch[j], tokens[j]);
             }
           }
           return tokenMap;
@@ -158,9 +156,6 @@ export default async function main(uiBuilder: UIBuilder, { t }: any) {
           if (carouselFieldId && carousel.length) fields[carouselFieldId] = build(carousel);
           if (aplusFieldId && aplus.length) fields[aplusFieldId] = build(aplus);
 
-          // 调试：输出附件值
-          console.log(`子文件夹 ${folder}:`, fields);
-
           records.push({ fields });
         }
 
@@ -170,21 +165,50 @@ export default async function main(uiBuilder: UIBuilder, { t }: any) {
           return;
         }
 
-        // 批量写入
+        // 写入第一条记录作为测试，并立即读取验证
         const BATCH_REC = 500;
         let added = 0;
         for (let i = 0; i < records.length; i += BATCH_REC) {
           const batch = records.slice(i, i + BATCH_REC);
-          await table.addRecords(batch);
+          const newRecordIds = await table.addRecords(batch);
           added += batch.length;
+
+          // 调试：读取第一条写入的记录，验证附件字段
+          if (i === 0 && newRecordIds.length > 0) {
+            const sampleId = newRecordIds[0];
+            const sampleRecord = await table.getRecordById(sampleId);
+            uiBuilder.text(`📝 示例记录 ID: ${sampleId}`);
+            if (mainFieldId && sampleRecord.fields[mainFieldId]) {
+              const val = sampleRecord.fields[mainFieldId];
+              if (isAttachmentArray(val)) {
+                uiBuilder.text(`✅ 主图字段包含 ${val.length} 个附件 token`);
+                // 可选：打印第一个 token
+                if (val.length) uiBuilder.text(`   第一个 token: ${val[0].file_token}`);
+              } else {
+                uiBuilder.text(`⚠️ 主图字段值不是预期的附件数组: ${JSON.stringify(val)}`);
+              }
+            }
+            if (carouselFieldId && sampleRecord.fields[carouselFieldId]) {
+              const val = sampleRecord.fields[carouselFieldId];
+              if (isAttachmentArray(val)) {
+                uiBuilder.text(`✅ 轮播图字段包含 ${val.length} 个附件`);
+              }
+            }
+            if (aplusFieldId && sampleRecord.fields[aplusFieldId]) {
+              const val = sampleRecord.fields[aplusFieldId];
+              if (isAttachmentArray(val)) {
+                uiBuilder.text(`✅ A+ 字段包含 ${val.length} 个附件`);
+              }
+            }
+          }
         }
 
         uiBuilder.hideLoading();
         uiBuilder.text(`✅ 成功写入 ${added} 条记录，共上传 ${records.reduce((s, r) => {
           let cnt = 0;
-          if (r.fields[mainFieldId]) cnt += r.fields[mainFieldId].length;
-          if (r.fields[carouselFieldId]) cnt += r.fields[carouselFieldId].length;
-          if (r.fields[aplusFieldId]) cnt += r.fields[aplusFieldId].length;
+          if (mainFieldId && r.fields[mainFieldId]) cnt += r.fields[mainFieldId].length;
+          if (carouselFieldId && r.fields[carouselFieldId]) cnt += r.fields[carouselFieldId].length;
+          if (aplusFieldId && r.fields[aplusFieldId]) cnt += r.fields[aplusFieldId].length;
           return s + cnt;
         }, 0)} 张图片`);
       } catch (err: any) {
