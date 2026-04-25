@@ -1,9 +1,6 @@
 // src/runUIBuilder.tsx
 import { bitable, UIBuilder } from "@lark-base-open/js-sdk";
 
-/**
- * 分批上传文件（每批最多 20 个）
- */
 async function batchUploadFiles(
   files: File[],
   batchUploadFn: (files: File[]) => Promise<string[]>
@@ -19,7 +16,6 @@ async function batchUploadFiles(
 }
 
 export default async function main(uiBuilder: UIBuilder, { t }: { t: (key: string) => string }) {
-  // 第一步：选择表格和附件字段
   const { tableId, fieldId } = await new Promise<{ tableId: string; fieldId: string }>((resolve) => {
     uiBuilder.form(
       (form) => ({
@@ -28,14 +24,18 @@ export default async function main(uiBuilder: UIBuilder, { t }: { t: (key: strin
           form.fieldSelect("fieldId", {
             label: "选择附件字段（用于存放图片）",
             sourceTable: "tableId",
-            filterByTypes: [17], // 17 = Attachment 类型
+            filterByTypes: [17],
           }),
         ],
         buttons: ["确认选择"],
       }),
       (args) => {
-        const tableId = args.values.tableId as string;
-        const fieldId = args.values.fieldId as string;
+        // 注意：tableSelect 和 fieldSelect 的值是 { id, name } 对象，需要提取 id
+        const rawTableId = args.values.tableId;
+        const rawFieldId = args.values.fieldId;
+        // 使用 as any 绕过类型检查
+        const tableId = rawTableId && typeof rawTableId === 'object' ? (rawTableId as any).id : rawTableId;
+        const fieldId = rawFieldId && typeof rawFieldId === 'object' ? (rawFieldId as any).id : rawFieldId;
         resolve({ tableId, fieldId });
       }
     );
@@ -46,7 +46,6 @@ export default async function main(uiBuilder: UIBuilder, { t }: { t: (key: strin
     return;
   }
 
-  // 验证表格是否存在，并获取表格对象（使用 any 规避类型问题）
   let table: any;
   try {
     table = await bitable.base.getTableById(tableId);
@@ -55,7 +54,6 @@ export default async function main(uiBuilder: UIBuilder, { t }: { t: (key: strin
     return;
   }
 
-  // 验证附件字段是否存在
   try {
     await table.getFieldById(fieldId);
   } catch (error: any) {
@@ -63,7 +61,6 @@ export default async function main(uiBuilder: UIBuilder, { t }: { t: (key: strin
     return;
   }
 
-  // 第二步：显示“选择图片并上传”按钮（必须由用户直接点击交互）
   uiBuilder.buttons("", ["选择图片并上传"], async () => {
     const fileInput = document.createElement("input");
     fileInput.type = "file";
