@@ -1,6 +1,9 @@
 // src/runUIBuilder.tsx
 import { bitable, UIBuilder } from "@lark-base-open/js-sdk";
 
+/**
+ * 分批上传文件（每批最多 20 个）
+ */
 async function batchUploadFiles(
   files: File[],
   batchUploadFn: (files: File[]) => Promise<string[]>
@@ -25,13 +28,12 @@ export default async function main(uiBuilder: UIBuilder, { t }: { t: (key: strin
           form.fieldSelect("fieldId", {
             label: "选择附件字段（用于存放图片）",
             sourceTable: "tableId",
-            filterByTypes: [17], // 附件字段类型
+            filterByTypes: [17], // 17 = Attachment 类型
           }),
         ],
         buttons: ["确认选择"],
       }),
       (args) => {
-        // 注意：args 的类型为 { key: string; values: Record<string, unknown> }
         const tableId = args.values.tableId as string;
         const fieldId = args.values.fieldId as string;
         resolve({ tableId, fieldId });
@@ -44,9 +46,25 @@ export default async function main(uiBuilder: UIBuilder, { t }: { t: (key: strin
     return;
   }
 
-  // 第二步：显示“选择图片并上传”按钮（确保用户直接交互）
+  // 验证表格是否存在，并获取表格对象（使用 any 规避类型问题）
+  let table: any;
+  try {
+    table = await bitable.base.getTableById(tableId);
+  } catch (error: any) {
+    uiBuilder.text(`❌ 无法获取表格 (${tableId})：${error.message}\n请确保表格存在且当前应用有访问权限。`);
+    return;
+  }
+
+  // 验证附件字段是否存在
+  try {
+    await table.getFieldById(fieldId);
+  } catch (error: any) {
+    uiBuilder.text(`❌ 无法获取附件字段 (${fieldId})：${error.message}\n请确保该字段是附件类型且未被删除。`);
+    return;
+  }
+
+  // 第二步：显示“选择图片并上传”按钮（必须由用户直接点击交互）
   uiBuilder.buttons("", ["选择图片并上传"], async () => {
-    // 创建文件选择器
     const fileInput = document.createElement("input");
     fileInput.type = "file";
     fileInput.multiple = true;
@@ -58,33 +76,27 @@ export default async function main(uiBuilder: UIBuilder, { t }: { t: (key: strin
         if (fileInput.files) resolve(fileInput.files);
         document.body.removeChild(fileInput);
       };
-      fileInput.click(); // 用户点击按钮后立即调用，符合安全策略
+      fileInput.click();
     });
 
     if (!files.length) {
-      uiBuilder.text("未选择任何图片，已取消");
+      uiBuilder.text("未选择任何图片，已取消操作");
       return;
     }
 
     uiBuilder.showLoading(`正在上传 ${files.length} 张图片...`);
 
     try {
-      const table = await bitable.base.getTableById(tableId);
-      const field = await table.getFieldById(fieldId); // 验证字段存在
-
-      // 分批上传图片，获取 file_token 列表
       const fileTokens = await batchUploadFiles(Array.from(files), (batch) =>
         bitable.base.batchUploadFile(batch)
       );
 
-      // 构造附件字段的值
       const attachmentValue = fileTokens.map((token) => ({ file_token: token }));
 
-      // 创建一条新记录，将图片写入附件字段
       await table.addRecord({
         fields: {
           [fieldId]: attachmentValue,
-        } as any, // 类型断言解决索引签名兼容问题
+        } as any,
       });
 
       uiBuilder.hideLoading();
