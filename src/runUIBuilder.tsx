@@ -1,4 +1,4 @@
-//@ts-nocheck
+// src/runUIBuilder.tsx
 import { bitable, UIBuilder } from "@lark-base-open/js-sdk";
 
 async function batchUploadFiles(
@@ -24,7 +24,7 @@ async function batchUploadFiles(
 }
 
 export default async function main(uiBuilder: UIBuilder) {
-  // 【原版界面完全保留】选择表格和附件字段
+  // 1. 选择表格和附件字段
   const { table, field } = await new Promise<{ table: any; field: any }>((resolve) => {
     uiBuilder.form(
       (form) => ({
@@ -33,7 +33,7 @@ export default async function main(uiBuilder: UIBuilder) {
           form.fieldSelect("field", {
             label: "附件字段",
             sourceTable: "table",
-            filterByTypes: [17],
+            filterByTypes: [17], // 17 = Attachment
           }),
         ],
         buttons: ["确认"],
@@ -51,12 +51,11 @@ export default async function main(uiBuilder: UIBuilder) {
 
   uiBuilder.text(`已选择字段: ${field.name} (ID: ${field.id})`);
 
-  // 【原版按钮完全保留】选择图片并上传
+  // 2. 显示按钮让用户选择图片
   uiBuilder.buttons("", ["选择图片并上传"], async () => {
     const fileInput = document.createElement("input");
     fileInput.type = "file";
     fileInput.multiple = true;
-    // 修复：属性赋值，解决语法报错
     fileInput.accept = "image/*";
     document.body.appendChild(fileInput);
 
@@ -77,31 +76,40 @@ export default async function main(uiBuilder: UIBuilder) {
 
     let allTokens: string[] = [];
     try {
-      const fileArray = Array.from(files);
-      // 原版批量上传逻辑
-      allTokens = await batchUploadFiles(fileArray, (files) => bitable.base.batchUploadFile(files));
+      // 3. 分批上传，实时更新进度
+      const BATCH_SIZE = 20;
+      for (let i = 0; i < files.length; i += BATCH_SIZE) {
+        const batch = Array.from(files).slice(i, i + BATCH_SIZE);
+        const tokens = await bitable.base.batchUploadFile(batch);
+        if (!tokens || tokens.length !== batch.length) {
+          throw new Error(`第 ${i / BATCH_SIZE + 1} 批上传结果不完整`);
+        }
+        allTokens.push(...tokens);
+        uiBuilder.showLoading(`上传中 (${allTokens.length}/${files.length})`);
+      }
 
       if (allTokens.length === 0) {
         throw new Error("未获取到任何 file_token");
       }
 
-      // 修复：正确赋值格式，兼容多维表格附件/图片字段
+      // 4. 尝试两种附件值格式（先使用对象数组格式）
       const attachmentValue = allTokens.map((token) => ({ file_token: token }));
 
-      // 写入记录
-      await table.addRecord({
+      // 5. 写入记录
+      const newRecord = await table.addRecord({
         fields: {
           [field.id]: attachmentValue,
         },
       });
 
       uiBuilder.hideLoading();
-      uiBuilder.text(`✅ 成功！已将 ${allTokens.length} 张图片添加到记录`);
+      uiBuilder.text(`✅ 成功！已将 ${allTokens.length} 张图片添加到记录 ${newRecord}`);
     } catch (error: any) {
       uiBuilder.hideLoading();
       const errorMsg = error?.message || String(error);
       uiBuilder.text(`❌ 失败：${errorMsg}`);
       console.error("详细错误:", error);
+      console.error("已上传的 token 列表:", allTokens);
     }
   });
 }
