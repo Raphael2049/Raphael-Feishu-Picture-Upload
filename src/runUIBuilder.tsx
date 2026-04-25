@@ -1,6 +1,7 @@
 // src/runUIBuilder.tsx
-import { bitable, UIBuilder } from "@lark-base-open/js-sdk";
+import { bitable, UIBuilder, ITable, IOpenCellValue } from "@lark-base-open/js-sdk";
 
+// 分批上传工具函数
 async function batchUploadFiles(
   files: File[],
   batchUploadFn: (files: File[]) => Promise<string[]>
@@ -16,6 +17,7 @@ async function batchUploadFiles(
 }
 
 export default async function main(uiBuilder: UIBuilder, { t }: { t: (key: string) => string }) {
+  // 修复TS类型：正确提取选择器ID
   const { tableId, fieldId } = await new Promise<{ tableId: string; fieldId: string }>((resolve) => {
     uiBuilder.form(
       (form) => ({
@@ -30,12 +32,8 @@ export default async function main(uiBuilder: UIBuilder, { t }: { t: (key: strin
         buttons: ["确认选择"],
       }),
       (args) => {
-        // 注意：tableSelect 和 fieldSelect 的值是 { id, name } 对象，需要提取 id
-        const rawTableId = args.values.tableId;
-        const rawFieldId = args.values.fieldId;
-        // 使用 as any 绕过类型检查
-        const tableId = rawTableId && typeof rawTableId === 'object' ? (rawTableId as any).id : rawTableId;
-        const fieldId = rawFieldId && typeof rawFieldId === 'object' ? (rawFieldId as any).id : rawFieldId;
+        const tableId = (args.values.tableId as { id: string }).id;
+        const fieldId = (args.values.fieldId as { id: string }).id;
         resolve({ tableId, fieldId });
       }
     );
@@ -46,37 +44,41 @@ export default async function main(uiBuilder: UIBuilder, { t }: { t: (key: strin
     return;
   }
 
-  let table: any;
+  // 显式声明table类型
+  let table: ITable;
   try {
     table = await bitable.base.getTableById(tableId);
   } catch (error: any) {
-    uiBuilder.text(`❌ 无法获取表格 (${tableId})：${error.message}\n请确保表格存在且当前应用有访问权限。`);
+    uiBuilder.text(`❌ 无法获取表格 (${tableId})：${error.message}`);
     return;
   }
 
   try {
     await table.getFieldById(fieldId);
   } catch (error: any) {
-    uiBuilder.text(`❌ 无法获取附件字段 (${fieldId})：${error.message}\n请确保该字段是附件类型且未被删除。`);
+    uiBuilder.text(`❌ 无法获取附件字段 (${fieldId})：${error.message}`);
     return;
   }
 
+  // 上传按钮逻辑
   uiBuilder.buttons("", ["选择图片并上传"], async () => {
+    // 原生DOM文件选择器（旧版SDK兼容）
     const fileInput = document.createElement("input");
     fileInput.type = "file";
     fileInput.multiple = true;
     fileInput.accept = "image/*";
     document.body.appendChild(fileInput);
 
-    const files = await new Promise<FileList>((resolve) => {
+    const files = await new Promise<File[] | null>((resolve) => {
       fileInput.onchange = () => {
-        if (fileInput.files) resolve(fileInput.files);
+        const fileList = fileInput.files;
         document.body.removeChild(fileInput);
+        resolve(fileList ? Array.from(fileList) : null);
       };
       fileInput.click();
     });
 
-    if (!files.length) {
+    if (!files || files.length === 0) {
       uiBuilder.text("未选择任何图片，已取消操作");
       return;
     }
@@ -84,16 +86,19 @@ export default async function main(uiBuilder: UIBuilder, { t }: { t: (key: strin
     uiBuilder.showLoading(`正在上传 ${files.length} 张图片...`);
 
     try {
-      const fileTokens = await batchUploadFiles(Array.from(files), (batch) =>
+      // 旧版SDK上传文件
+      const fileTokens = await batchUploadFiles(files, (batch) =>
         bitable.base.batchUploadFile(batch)
       );
 
-      const attachmentValue = fileTokens.map((token) => ({ file_token: token }));
+      // 附件格式（标准正确格式）
+      const attachmentValue = fileTokens.map((token) => ({ fileToken: token }));
 
+      // ✅ 核心修复：加类型断言，解决TS重载报错
       await table.addRecord({
         fields: {
-          [fieldId]: attachmentValue,
-        } as any,
+          [fieldId]: attachmentValue as unknown as IOpenCellValue,
+        },
       });
 
       uiBuilder.hideLoading();
