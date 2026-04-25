@@ -28,7 +28,7 @@ async function batchUploadFiles(
       }
       
       // 创建附件记录，包含文件信息
-      const batchAttachments = tokens.map((token, index) => {
+      const batchAttachments = tokens.map((token: string, index: number) => {
         const file = batch[index];
         return {
           token,
@@ -53,8 +53,6 @@ async function batchUploadFiles(
   
   return allAttachments;
 }
-
-// 创建图片预览元素
 
 // 格式化文件大小
 function formatFileSize(bytes: number): string {
@@ -120,6 +118,16 @@ export default async function main(uiBuilder: UIBuilder) {
   // 获取表格对象
   const table = await bitable.base.getTableById(tableId);
   
+  // 验证选择的字段确实是附件类型
+  const field = await table.getFieldById(fieldId);
+  const fieldInfo = await field.getMeta();
+  
+  if (fieldInfo.type !== 17) { // 17是附件字段类型
+    uiBuilder.text("❌ 错误：选择的字段不是附件类型");
+    uiBuilder.text("请重新选择类型为'附件'的字段");
+    return;
+  }
+  
   uiBuilder.text(`✅ 已选择表格和附件字段`);
   
   // 3. 上传配置选项
@@ -152,26 +160,50 @@ export default async function main(uiBuilder: UIBuilder) {
   
   // 4. 图片选择和上传
   uiBuilder.buttons("", ["📁 选择图片并上传"], async () => {
-    // 创建文件选择器
-    const fileInput = document.createElement("input");
-    fileInput.type = "file";
-    fileInput.multiple = true;
-    fileInput.accept = "image/*,.jpg,.jpeg,.png,.gif,.webp,.bmp";
-    fileInput.style.display = "none";
-    document.body.appendChild(fileInput);
-
-    const files = await new Promise<File[]>((resolve) => {
-      fileInput.onchange = () => {
-        if (fileInput.files) {
-          const fileArray = Array.from(fileInput.files);
-          resolve(fileArray);
-        } else {
-          resolve([]);
-        }
-        document.body.removeChild(fileInput);
-      };
+    // 使用飞书SDK的文件选择API
+    let files: File[] = [];
+    
+    try {
+      // 在飞书插件环境中，我们需要使用原生的文件选择器
+      // 因为飞书SDK可能没有提供 chooseFile API
+      const fileInput = document.createElement("input");
+      fileInput.type = "file";
+      fileInput.multiple = true;
+      fileInput.accept = "image/*";
+      
+      // 等待用户选择文件
+      const filePromise = new Promise<FileList>((resolve) => {
+        fileInput.onchange = (e) => {
+          const target = e.target as HTMLInputElement;
+          if (target.files && target.files.length > 0) {
+            resolve(target.files);
+          } else {
+            resolve(new FileList());
+          }
+        };
+      });
+      
+      // 触发文件选择
       fileInput.click();
-    });
+      
+      // 等待用户选择文件
+      const fileList = await filePromise;
+      
+      if (!fileList || fileList.length === 0) {
+        uiBuilder.text("⚠️ 未选择任何图片文件");
+        return;
+      }
+      
+      // 将 FileList 转换为 File 数组
+      files = Array.from(fileList);
+      
+    } catch (error) {
+      uiBuilder.text("❌ 文件选择失败");
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      uiBuilder.text(`错误: ${errorMessage}`);
+      uiBuilder.text("请尝试使用浏览器的文件选择功能");
+      return;
+    }
 
     if (!files.length) {
       uiBuilder.text("⚠️ 未选择任何图片文件");
@@ -189,7 +221,7 @@ export default async function main(uiBuilder: UIBuilder) {
       }
     });
     
-    // 显示上传状态（使用文本代替进度条）
+    // 显示上传状态
     uiBuilder.text("准备上传...");
     
     try {
