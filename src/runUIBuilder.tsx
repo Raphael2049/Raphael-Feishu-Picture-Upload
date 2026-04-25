@@ -2,7 +2,7 @@
 import { bitable, UIBuilder } from "@lark-base-open/js-sdk";
 
 /**
- * 分批上传文件，每批最多 20 个
+ * 分批上传文件（每批最多 20 个）
  */
 async function batchUploadFiles(
   files: File[],
@@ -12,60 +12,38 @@ async function batchUploadFiles(
   const allTokens: string[] = [];
   for (let i = 0; i < files.length; i += BATCH_SIZE) {
     const batch = files.slice(i, i + BATCH_SIZE);
-    console.log(`上传第 ${i / BATCH_SIZE + 1} 批，共 ${batch.length} 个文件`);
     const tokens = await batchUploadFn(batch);
-    console.log('本批返回 tokens:', tokens);
     allTokens.push(...tokens);
   }
   return allTokens;
 }
 
 export default async function main(uiBuilder: UIBuilder, { t }: { t: (key: string) => string }) {
-  // 第一步：选择表格和附件字段
-  const { tableId, fieldId } = await new Promise<{ tableId: string; fieldId: string }>((resolve) => {
+  // 第一步：选择表格和附件字段（注意：返回值是对象，包含 id, name 等属性）
+  const { table, field } = await new Promise<{ table: any; field: any }>((resolve) => {
     uiBuilder.form(
       (form) => ({
         formItems: [
-          form.tableSelect("tableId", { label: "选择目标表格" }),
-          form.fieldSelect("fieldId", {
+          form.tableSelect("table", { label: "选择目标表格" }),
+          form.fieldSelect("field", {
             label: "选择附件字段（用于存放图片）",
-            sourceTable: "tableId",
+            sourceTable: "table",
             filterByTypes: [17], // 17 = Attachment 类型
           }),
         ],
         buttons: ["确认选择"],
       }),
       (args) => {
-        const rawTableId = args.values.tableId;
-        const rawFieldId = args.values.fieldId;
-        // 提取 id（表单返回的是 { id, name } 对象）
-        const tableId = rawTableId && typeof rawTableId === 'object' ? (rawTableId as any).id : rawTableId;
-        const fieldId = rawFieldId && typeof rawFieldId === 'object' ? (rawFieldId as any).id : rawFieldId;
-        console.log('用户选择的 tableId:', tableId, 'fieldId:', fieldId);
-        resolve({ tableId, fieldId });
+        // 官方文档：values.table 和 values.field 已经是对象，无需再次调用 getTableById
+        const table = args.values.table;
+        const field = args.values.field;
+        resolve({ table, field });
       }
     );
   });
 
-  if (!tableId || !fieldId) {
+  if (!table || !field) {
     uiBuilder.text("未选择表格或附件字段，已取消");
-    return;
-  }
-
-  let table: any;
-  try {
-    table = await bitable.base.getTableById(tableId);
-    console.log('成功获取表格对象');
-  } catch (error: any) {
-    uiBuilder.text(`❌ 无法获取表格 (${tableId})：${error.message}`);
-    return;
-  }
-
-  try {
-    const field = await table.getFieldById(fieldId);
-    console.log('字段信息:', field);
-  } catch (error: any) {
-    uiBuilder.text(`❌ 无法获取附件字段 (${fieldId})：${error.message}`);
     return;
   }
 
@@ -93,33 +71,31 @@ export default async function main(uiBuilder: UIBuilder, { t }: { t: (key: strin
     uiBuilder.showLoading(`正在上传 ${files.length} 张图片...`);
 
     try {
-      // 分批上传，获取 file_token 列表
+      // 上传图片，批量获取 file_token
       const fileTokens = await batchUploadFiles(Array.from(files), (batch) =>
         bitable.base.batchUploadFile(batch)
       );
 
       if (!fileTokens.length) {
-        throw new Error("上传图片失败，未获取到任何 file_token");
+        throw new Error("上传失败，未获取到 file_token");
       }
 
-      // 构造附件字段的值（标准格式）
+      // 附件字段的值格式：数组，每个元素为 { file_token: "xxx" }
       const attachmentValue = fileTokens.map((token) => ({ file_token: token }));
-      console.log('准备写入的附件值:', attachmentValue);
 
-      // 构造记录字段（确保 fieldId 是字符串键）
-      const fields: Record<string, any> = {};
-      fields[String(fieldId)] = attachmentValue;
-
-      // 创建记录
-      const recordId = await table.addRecord({ fields });
-      console.log('创建记录成功，recordId:', recordId);
+      // 创建新记录，写入附件字段（注意使用 field.id）
+      const recordId = await table.addRecord({
+        fields: {
+          [field.id]: attachmentValue,
+        },
+      });
 
       uiBuilder.hideLoading();
       uiBuilder.text(`✅ 成功！已将 ${files.length} 张图片添加到新记录 (ID: ${recordId}) 中。`);
     } catch (error: any) {
       uiBuilder.hideLoading();
       uiBuilder.text(`❌ 上传或写入失败：${error.message}`);
-      console.error('详细错误:', error);
+      console.error(error);
     }
   });
 }
