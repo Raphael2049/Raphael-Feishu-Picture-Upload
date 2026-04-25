@@ -1,115 +1,99 @@
-// src/runUIBuilder.tsx
+//@ts-nocheck
 import { bitable, UIBuilder } from "@lark-base-open/js-sdk";
 
-async function batchUploadFiles(
-  files: File[],
-  batchUploadFn: (files: File[]) => Promise<string[]>
-): Promise<string[]> {
-  const BATCH_SIZE = 20;
-  const allTokens: string[] = [];
-  for (let i = 0; i < files.length; i += BATCH_SIZE) {
-    const batch = files.slice(i, i + BATCH_SIZE);
-    try {
-      const tokens = await batchUploadFn(batch);
-      if (!tokens || !tokens.length) {
-        throw new Error(`第 ${i / BATCH_SIZE + 1} 批上传失败，未返回 token`);
-      }
-      allTokens.push(...tokens);
-    } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : String(err);
-      throw new Error(`上传第 ${i / BATCH_SIZE + 1} 批失败: ${errorMessage}`);
-    }
-  }
-  return allTokens;
-}
+export default async function main(uiBuilder: UIBuilder, { t }) {
+    uiBuilder.markdown(`
+  > ${t('Welcome')}，这是飞书多维表格图片批量上传插件  
+  请选择目标数据表/图片字段，并上传需要批量导入的图片 👉 [使用指南](https://feishu.feishu.cn/docx/OHxZdBQrVo5uudx1moIcL5jcn3c)
+  `);
 
-export default async function main(uiBuilder: UIBuilder) {
-  // 1. 选择表格和附件字段
-  const { table, field } = await new Promise<{ table: any; field: any }>((resolve) => {
-    uiBuilder.form(
-      (form) => ({
+    // 构建核心表单：选择数据表+图片字段 + 批量上传图片
+    uiBuilder.form((form) => ({
         formItems: [
-          form.tableSelect("table", { label: "目标表格" }),
-          form.fieldSelect("field", {
-            label: "附件字段",
-            sourceTable: "table",
-            filterByTypes: [17], // 17 = Attachment
-          }),
+            // 1. 选择目标数据表
+            form.tableSelect('table', { 
+                label: '选择目标数据表', 
+                required: true 
+            }),
+            // 2. 选择图片类型的字段（需确保字段类型为「图片」）
+            form.fieldSelect('imageField', { 
+                label: '选择图片字段', 
+                sourceTable: 'table',
+                required: true,
+                // 过滤仅显示图片类型的字段（关键：避免选到非图片字段）
+                filter: (field) => field.type === 'Image' 
+            }),
+            // 3. 批量图片上传组件（核心）
+            form.fileUpload('images', {
+                label: '选择批量上传的图片',
+                required: true,
+                accept: ['image/jpeg', 'image/png', 'image/gif', 'image/webp'], // 限制仅图片类型
+                multiple: true, // 开启批量上传
+                maxCount: 50, // 限制单次上传数量（可调整）
+                maxSize: 10 * 1024 * 1024, // 单文件最大10MB（飞书多维表格图片字段限制）
+            }),
         ],
-        buttons: ["确认"],
-      }),
-      (args) => {
-        resolve({ table: args.values.table, field: args.values.field });
-      }
-    );
-  });
-
-  if (!table || !field) {
-    uiBuilder.text("❌ 未选择表格或附件字段");
-    return;
-  }
-
-  uiBuilder.text(`已选择字段: ${field.name} (ID: ${field.id})`);
-
-  // 2. 显示按钮让用户选择图片
-  uiBuilder.buttons("", ["选择图片并上传"], async () => {
-    const fileInput = document.createElement("input");
-    fileInput.type = "file";
-    fileInput.multiple = true;
-    fileInput.accept = "image/*";
-    document.body.appendChild(fileInput);
-
-    const files = await new Promise<FileList>((resolve) => {
-      fileInput.onchange = () => {
-        if (fileInput.files) resolve(fileInput.files);
-        document.body.removeChild(fileInput);
-      };
-      fileInput.click();
-    });
-
-    if (!files.length) {
-      uiBuilder.text("未选择任何图片");
-      return;
-    }
-
-    uiBuilder.showLoading(`上传中 (0/${files.length})`);
-
-    let allTokens: string[] = [];
-    try {
-      // 3. 分批上传，实时更新进度
-      const BATCH_SIZE = 20;
-      for (let i = 0; i < files.length; i += BATCH_SIZE) {
-        const batch = Array.from(files).slice(i, i + BATCH_SIZE);
-        const tokens = await bitable.base.batchUploadFile(batch);
-        if (!tokens || tokens.length !== batch.length) {
-          throw new Error(`第 ${i / BATCH_SIZE + 1} 批上传结果不完整`);
+        buttons: ['开始上传', '取消'],
+    }), async ({ key, values }) => {
+        // 点击「取消」按钮：仅提示
+        if (key === '取消') {
+            uiBuilder.markdown(`✅ 已取消图片上传操作`);
+            return;
         }
-        allTokens.push(...tokens);
-        uiBuilder.showLoading(`上传中 (${allTokens.length}/${files.length})`);
-      }
 
-      if (allTokens.length === 0) {
-        throw new Error("未获取到任何 file_token");
-      }
+        // 点击「开始上传」按钮：执行核心上传逻辑
+        if (key === '开始上传') {
+            try {
+                const { table, imageField, images } = values;
+                // 校验必要参数
+                if (!table || !imageField || !images?.length) {
+                    uiBuilder.markdown(`❌ 请完善必填项：选择数据表、图片字段并上传图片`);
+                    return;
+                }
 
-      // 4. 尝试两种附件值格式（先使用对象数组格式）
-      const attachmentValue = allTokens.map((token) => ({ file_token: token }));
+                uiBuilder.markdown(`📤 开始批量上传图片（共${images.length}张），请稍候...`);
 
-      // 5. 写入记录
-      const newRecord = await table.addRecord({
-        fields: {
-          [field.id]: attachmentValue,
-        },
-      });
+                // 1. 获取数据表实例
+                const tableInst = await bitable.base.getTableById(table);
+                // 2. 批量上传图片到多维表格（逐张上传，带进度反馈）
+                let successCount = 0;
+                let failList: string[] = [];
 
-      uiBuilder.hideLoading();
-      uiBuilder.text(`✅ 成功！已将 ${allTokens.length} 张图片添加到记录 ${newRecord}`);
-    } catch (error: any) {
-      uiBuilder.hideLoading();
-      const errorMsg = error?.message || String(error);
-      uiBuilder.text(`❌ 失败：${errorMsg}`);
-      console.error("详细错误:", error);
-      console.error("已上传的 token 列表:", allTokens);
-    }
-  });
+                for (const [index, file] of images.entries()) {
+                    try {
+                        // 飞书SDK：上传文件到图片字段（核心API）
+                        const imageValue = await tableInst.createImageFieldValue({
+                            file: file,
+                        });
+                        // 插入新行：将图片写入选中的图片字段
+                        await tableInst.addRecord({
+                            fields: {
+                                [imageField]: imageValue, // 图片字段赋值
+                            },
+                        });
+                        successCount++;
+                        uiBuilder.markdown(`✅ 第${index+1}张图片上传成功：${file.name}`);
+                    } catch (err) {
+                        const errMsg = (err as Error).message || '未知错误';
+                        failList.push(`第${index+1}张：${file.name}（${errMsg}）`);
+                        uiBuilder.markdown(`❌ 第${index+1}张图片上传失败：${file.name} - ${errMsg}`);
+                    }
+                }
+
+                // 3. 上传完成汇总反馈
+                uiBuilder.markdown(`
+  ### 📊 批量上传完成
+  - 总上传数：${images.length}
+  - 成功数：${successCount}
+  - 失败数：${failList.length}
+  ${failList.length > 0 ? `\n失败详情：\n${failList.join('\n')}` : ''}
+  `);
+
+            } catch (globalErr) {
+                // 全局异常捕获
+                const errMsg = (globalErr as Error).message || '上传流程异常';
+                uiBuilder.markdown(`❌ 批量上传失败：${errMsg}`);
+            }
+        }
+    });
 }
