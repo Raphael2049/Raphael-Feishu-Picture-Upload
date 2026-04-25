@@ -3,250 +3,148 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>飞书表格批量传图插件</title>
-  <!-- 👇 关键：引入飞书 JS SDK -->
-  <script src="https://lf3-cdn-tos.bytecdntp.com/cdn/expire-1-M/lark-js-sdk/1.10.0/lark.js"></script>
+  <title>批量上传图片</title>
   <style>
-    .container {
-      padding: 20px;
-      max-width: 600px;
-      margin: 0 auto;
-    }
-    .tip {
-      color: #666;
-      margin: 10px 0;
-      font-size: 14px;
-    }
-    .btn {
-      margin: 10px 0;
-      padding: 8px 16px;
-      cursor: pointer;
-      background: #007bff;
-      color: white;
-      border: none;
-      border-radius: 4px;
-    }
-    .btn:disabled {
-      background: #ccc;
-      cursor: not-allowed;
-    }
-    .file-input, .field-select {
-      margin: 10px 0;
-      padding: 6px;
-      width: 100%;
-      box-sizing: border-box;
-    }
-    .status {
-      margin-top: 15px;
-      padding: 10px;
-      border-radius: 4px;
-      font-size: 14px;
-    }
-    .success {
-      background: #d4edda;
-      color: #155724;
-    }
-    .error {
-      background: #f8d7da;
-      color: #721c24;
-    }
+    *{padding:10px;box-sizing:border-box;}
+    button{background:#007bff;color:white;border:none;padding:10px 16px;border-radius:6px;cursor:pointer;}
+    button:disabled{background:#ccc;}
+    .status{margin-top:10px;color:red;}
   </style>
 </head>
 <body>
-  <div class="container">
-    <h3>批量上传图片到飞书多维表格</h3>
-    <div class="tip" id="contextTip">初始化中...</div>
-    
-    <div>
-      <label>选择图片字段：</label>
-      <select class="field-select" id="imageFieldSelect" disabled>
-        <option value="">加载中...</option>
-      </select>
-    </div>
-    
-    <div>
-      <label>选择本地图片（可多选）：</label>
-      <input type="file" class="file-input" id="fileInput" multiple accept="image/png,image/jpg,image/jpeg,image/webp" disabled />
-    </div>
-    
-    <button class="btn" id="uploadBtn" disabled>开始批量上传</button>
-    
-    <div class="status" id="uploadStatus"></div>
-  </div>
+  <h3>批量上传图片到多维表格</h3>
+  <select id="fieldSelect"><option>加载图片字段中...</option></select>
+  <input type="file" id="fileInput" multiple accept="image/*">
+  <button id="upload" disabled>开始上传</button>
+  <div class="status" id="status"></div>
 
-  <script>
-    const globalContext = {
-      baseId: '',
-      tableId: '',
-      accessToken: ''
-    };
+<script>
+// ==========================================
+// 飞书插件官方全局对象：window.parent.h5bs
+// 不需要任何外部SDK！不需要lark！
+// ==========================================
+const bs = window.parent.h5bs;
 
-    // 👇 修复 SDK 初始化
-    async function init() {
-      try {
-        // 1. 初始化 SDK（飞书插件环境会自动注入 appId，无需手动传）
-        await window.lark.init();
-        console.log('SDK 初始化成功');
+let context = null;
+let token = null;
+let imageFieldId = null;
 
-        // 2. 获取当前多维表格上下文
-        const context = await window.lark.base.context.get();
-        globalContext.baseId = context.baseId;
-        globalContext.tableId = context.tableId;
-        document.getElementById('contextTip').textContent = 
-          `已获取表格上下文：BaseID=${globalContext.baseId}，TableID=${globalContext.tableId}`;
+// 初始化
+(async function init() {
+  try {
+    // 1. 获取当前表格上下文（自动获取）
+    context = await bs.getContext();
+    // 2. 获取鉴权token
+    token = await bs.getAccessToken();
 
-        // 3. 获取 access_token（前端安全鉴权）
-        const authRes = await window.lark.auth.getAccessToken();
-        globalContext.accessToken = authRes.accessToken;
-        console.log('获取 accessToken 成功');
+    showMsg("初始化成功，加载字段中...");
 
-        // 4. 加载表格字段
-        await loadTableFields();
+    // 3. 加载图片字段
+    await loadImageFields();
 
-        // 启用控件
-        document.getElementById('imageFieldSelect').disabled = false;
-        document.getElementById('fileInput').disabled = false;
-        document.getElementById('uploadBtn').disabled = false;
-      } catch (err) {
-        document.getElementById('contextTip').textContent = `初始化失败：${err.message}`;
-        document.getElementById('contextTip').style.color = 'red';
-        console.error('初始化错误：', err);
-      }
+    document.getElementById("upload").disabled = false;
+    showMsg("加载完成，请选择图片并上传");
+  } catch (e) {
+    showMsg("初始化失败：" + e.message, true);
+  }
+})();
+
+// 加载图片字段
+async function loadImageFields() {
+  const res = await fetch(`https://open.feishu.cn/open-apis/base/v1/tables/${context.tableId}/fields`, {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+  const json = await res.json();
+  const fields = json.data.items.filter(f => f.field_type === 11); // 11=图片字段
+
+  const select = document.getElementById("fieldSelect");
+  select.innerHTML = "";
+
+  fields.forEach(f => {
+    const opt = document.createElement("option");
+    opt.value = f.field_id;
+    opt.innerText = f.field_name;
+    select.appendChild(opt);
+  });
+
+  imageFieldId = fields[0]?.field_id;
+  select.onchange = () => imageFieldId = select.value;
+}
+
+// 获取图片上传凭证
+async function getTicket(file) {
+  const res = await fetch("https://open.feishu.cn/open-apis/tenant/upload/prepare", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${token}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      file_name: file.name,
+      file_size: file.size,
+      parent_type: "base",
+      parent_node: context.baseId,
+      file_type: file.type
+    })
+  });
+  const json = await res.json();
+  return json.data;
+}
+
+// 上传文件
+async function uploadFile(file, url) {
+  await fetch(url, {
+    method: "PUT",
+    body: file,
+    headers: { "Content-Type": "application/octet-stream" }
+  });
+}
+
+// 创建记录
+async function createRecord(ticket) {
+  await fetch("https://open.feishu.cn/open-apis/base/v1/records", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${token}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      table_id: context.tableId,
+      fields: { [imageFieldId]: [{ file_token: ticket }] }
+    })
+  });
+}
+
+// 上传按钮点击
+document.getElementById("upload").onclick = async () => {
+  const files = document.getElementById("fileInput").files;
+  if (!files.length) return showMsg("请选择图片", true);
+
+  const btn = document.getElementById("upload");
+  btn.disabled = true;
+  showMsg("开始上传...");
+
+  try {
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      showMsg(`上传中 ${i+1}/${files.length}：${file.name}`);
+      const { upload_url, ticket } = await getTicket(file);
+      await uploadFile(file, upload_url);
+      await createRecord(ticket);
     }
+    showMsg("✅ 全部上传完成！");
+  } catch (e) {
+    showMsg("❌ 失败：" + e.message, true);
+  } finally {
+    btn.disabled = false;
+  }
+};
 
-    async function loadTableFields() {
-      try {
-        const res = await fetch(`https://open.feishu.cn/open-apis/base/v1/bases/${globalContext.baseId}/tables/${globalContext.tableId}/fields`, {
-          headers: {
-            'Authorization': `Bearer ${globalContext.accessToken}`
-          }
-        });
-        const data = await res.json();
-        if (data.code !== 0) throw new Error(data.msg);
-
-        const imageFields = data.data.items.filter(field => field.type === 11);
-        const select = document.getElementById('imageFieldSelect');
-        
-        if (imageFields.length === 0) {
-          select.innerHTML = '<option value="">当前表格无图片字段</option>';
-          document.getElementById('uploadBtn').disabled = true;
-          return;
-        }
-
-        select.innerHTML = imageFields.map(field => 
-          `<option value="${field.id}">${field.name}</option>`
-        ).join('');
-      } catch (err) {
-        document.getElementById('contextTip').textContent = `加载字段失败：${err.message}`;
-        document.getElementById('contextTip').style.color = 'red';
-        console.error('加载字段错误：', err);
-      }
-    }
-
-    async function getUploadTicket(file) {
-      const res = await fetch('https://open.feishu.cn/open-apis/tenant/upload/prepare', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${globalContext.accessToken}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          file_name: file.name,
-          file_size: file.size,
-          parent_type: 'base',
-          parent_node: globalContext.baseId,
-          file_type: file.type
-        })
-      });
-      const data = await res.json();
-      if (data.code !== 0) throw new Error(data.msg);
-      return data.data;
-    }
-
-    async function uploadImageToUrl(file, uploadUrl) {
-      await fetch(uploadUrl, {
-        method: 'PUT',
-        body: file,
-        headers: {
-          'Content-Type': 'application/octet-stream'
-        }
-      });
-    }
-
-    async function batchCreateRecords(tickets, fieldId) {
-      const requests = tickets.map(ticket => ({
-        create: {
-          table_id: globalContext.tableId,
-          fields: {
-            [fieldId]: [{ file_token: ticket }]
-          }
-        }
-      }));
-
-      const res = await fetch('https://open.feishu.cn/open-apis/base/v1/batches/records', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${globalContext.accessToken}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ requests })
-      });
-      const data = await res.json();
-      if (data.code !== 0) throw new Error(data.msg);
-      return data;
-    }
-
-    async function handleBatchUpload() {
-      const fileInput = document.getElementById('fileInput');
-      const fieldSelect = document.getElementById('imageFieldSelect');
-      const status = document.getElementById('uploadStatus');
-      const files = fileInput.files;
-      const fieldId = fieldSelect.value;
-
-      if (files.length === 0) {
-        status.className = 'status error';
-        status.textContent = '请选择要上传的图片！';
-        return;
-      }
-      if (!fieldId) {
-        status.className = 'status error';
-        status.textContent = '请选择图片字段！';
-        return;
-      }
-
-      document.getElementById('uploadBtn').disabled = true;
-      status.className = 'status';
-      status.textContent = `开始上传${files.length}张图片...`;
-
-      try {
-        const tickets = [];
-        for (let i = 0; i < files.length; i++) {
-          const file = files[i];
-          status.textContent = `正在上传第${i+1}/${files.length}张：${file.name}`;
-          
-          const { upload_url, ticket } = await getUploadTicket(file);
-          await uploadImageToUrl(file, upload_url);
-          tickets.push(ticket);
-        }
-
-        await batchCreateRecords(tickets, fieldId);
-
-        status.className = 'status success';
-        status.textContent = `全部上传完成！共上传${files.length}张图片`;
-        fileInput.value = '';
-      } catch (err) {
-        status.className = 'status error';
-        status.textContent = `上传失败：${err.message}`;
-        console.error('上传错误：', err);
-      } finally {
-        document.getElementById('uploadBtn').disabled = false;
-      }
-    }
-
-    window.onload = async () => {
-      await init();
-      document.getElementById('uploadBtn').addEventListener('click', handleBatchUpload);
-    };
-  </script>
+function showMsg(text, isError = false) {
+  const s = document.getElementById("status");
+  s.innerText = text;
+  s.style.color = isError ? "red" : "green";
+}
+</script>
 </body>
 </html>
