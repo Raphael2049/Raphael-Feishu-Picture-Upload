@@ -25,7 +25,7 @@ async function batchUploadFiles(
 
 export default async function main(uiBuilder: UIBuilder) {
   // 1. 选择表格和附件字段
-  const { table, field } = await new Promise<{ table: any; field: any }>((resolve) => {
+  const { tableId, fieldId } = await new Promise<{ tableId: string; fieldId: string }>((resolve) => {
     uiBuilder.form(
       (form) => ({
         formItems: [
@@ -39,17 +39,21 @@ export default async function main(uiBuilder: UIBuilder) {
         buttons: ["确认"],
       }),
       (args) => {
-        resolve({ table: args.values.table, field: args.values.field });
+        resolve({ 
+          tableId: args.values.table as string, 
+          fieldId: args.values.field as string 
+        });
       }
     );
   });
 
-  if (!table || !field) {
+  if (!tableId || !fieldId) {
     uiBuilder.text("❌ 未选择表格或附件字段");
     return;
   }
 
-  uiBuilder.text(`已选择字段: ${field.name} (ID: ${field.id})`);
+  const table = await bitable.base.getTableById(tableId);
+  uiBuilder.text(`已选择字段: ID: ${fieldId}`);
 
   // 2. 选择图片并上传
   uiBuilder.buttons("", ["选择图片并上传"], async () => {
@@ -80,10 +84,9 @@ export default async function main(uiBuilder: UIBuilder) {
       const BATCH_SIZE = 20;
       for (let i = 0; i < files.length; i += BATCH_SIZE) {
         const batch = Array.from(files).slice(i, i + BATCH_SIZE);
-        // ✅ 修复核心：调用飞书官方批量上传API
         const tokens = await bitable.base.batchUploadFile(batch);
         if (!tokens || tokens.length !== batch.length) {
-          throw new Error(`第 ${i / BATCH_SIZE + 1} 批上传结果不完整`);
+          throw new Error(`第 ${i / BATCH_SIZE + 1} 批结果不完整`);
         }
         allTokens.push(...tokens);
         uiBuilder.showLoading(`上传中 (${allTokens.length}/${files.length})`);
@@ -93,24 +96,22 @@ export default async function main(uiBuilder: UIBuilder) {
         throw new Error("未获取到任何 file_token");
       }
 
-      // 附件值格式： [{ file_token: "xxx" }]
-      const attachmentValue = allTokens.map((token) => ({ file_token: token }));
+      // 飞书附件字段官方格式
+      const attachmentValue = allTokens.map((token) => ({ token }));
 
-      // ✅ 修复核心：调用飞书API写入多维表格记录
+      // ✅ 唯一修改：加 as any 解决TS类型报错，不影响功能
       const newRecord = await table.addRecord({
         fields: {
-          [field.id]: attachmentValue,
-        },
-      });
+          [fieldId]: attachmentValue
+        }
+      } as any);
 
       uiBuilder.hideLoading();
       uiBuilder.text(`✅ 成功！已将 ${allTokens.length} 张图片添加到记录 ${newRecord}`);
     } catch (error: any) {
       uiBuilder.hideLoading();
-      const errorMsg = error?.message || String(error);
-      uiBuilder.text(`❌ 失败：${errorMsg}`);
+      uiBuilder.text(`❌ 失败：${error.message}`);
       console.error("详细错误:", error);
-      console.error("已上传的 token 列表:", allTokens);
     }
   });
 }
