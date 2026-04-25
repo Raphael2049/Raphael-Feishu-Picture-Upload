@@ -4,8 +4,9 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>飞书表格批量传图插件</title>
+  <!-- 👇 关键：引入飞书 JS SDK -->
+  <script src="https://lf3-cdn-tos.bytecdntp.com/cdn/expire-1-M/lark-js-sdk/1.10.0/lark.js"></script>
   <style>
-    /* 简单样式，保证页面可用 */
     .container {
       padding: 20px;
       max-width: 600px;
@@ -54,10 +55,8 @@
 <body>
   <div class="container">
     <h3>批量上传图片到飞书多维表格</h3>
-    <!-- 上下文提示：自动显示baseId/tableId -->
     <div class="tip" id="contextTip">初始化中...</div>
     
-    <!-- 图片字段选择：自动加载当前表格的图片字段 -->
     <div>
       <label>选择图片字段：</label>
       <select class="field-select" id="imageFieldSelect" disabled>
@@ -65,40 +64,46 @@
       </select>
     </div>
     
-    <!-- 文件选择：替代硬编码的localImagePath -->
     <div>
       <label>选择本地图片（可多选）：</label>
       <input type="file" class="file-input" id="fileInput" multiple accept="image/png,image/jpg,image/jpeg,image/webp" disabled />
     </div>
     
-    <!-- 上传按钮 -->
     <button class="btn" id="uploadBtn" disabled>开始批量上传</button>
     
-    <!-- 上传状态提示 -->
     <div class="status" id="uploadStatus"></div>
   </div>
 
   <script>
-    // 全局上下文：存储自动获取的baseId/tableId
     const globalContext = {
       baseId: '',
-      tableId: ''
+      tableId: '',
+      accessToken: ''
     };
 
-    // 初始化：自动获取表格上下文 + 加载图片字段
+    // 👇 修复 SDK 初始化
     async function init() {
       try {
-        // 1. 自动获取当前表格的baseId/tableId（替代硬编码）
-        const context = await lark.base.context.get();
+        // 1. 初始化 SDK（飞书插件环境会自动注入 appId，无需手动传）
+        await window.lark.init();
+        console.log('SDK 初始化成功');
+
+        // 2. 获取当前多维表格上下文
+        const context = await window.lark.base.context.get();
         globalContext.baseId = context.baseId;
         globalContext.tableId = context.tableId;
         document.getElementById('contextTip').textContent = 
           `已获取表格上下文：BaseID=${globalContext.baseId}，TableID=${globalContext.tableId}`;
 
-        // 2. 加载当前表格的所有字段，筛选出图片类型字段
+        // 3. 获取 access_token（前端安全鉴权）
+        const authRes = await window.lark.auth.getAccessToken();
+        globalContext.accessToken = authRes.accessToken;
+        console.log('获取 accessToken 成功');
+
+        // 4. 加载表格字段
         await loadTableFields();
 
-        // 3. 启用所有交互元素
+        // 启用控件
         document.getElementById('imageFieldSelect').disabled = false;
         document.getElementById('fileInput').disabled = false;
         document.getElementById('uploadBtn').disabled = false;
@@ -109,17 +114,17 @@
       }
     }
 
-    // 加载表格字段，筛选图片类型字段
     async function loadTableFields() {
       try {
-        // 调用飞书API获取表格字段列表
-        const res = await lark.base.api.get({
-          url: `/open-apis/base/v1/bases/${globalContext.baseId}/tables/${globalContext.tableId}/fields`,
-          method: 'GET'
+        const res = await fetch(`https://open.feishu.cn/open-apis/base/v1/bases/${globalContext.baseId}/tables/${globalContext.tableId}/fields`, {
+          headers: {
+            'Authorization': `Bearer ${globalContext.accessToken}`
+          }
         });
+        const data = await res.json();
+        if (data.code !== 0) throw new Error(data.msg);
 
-        // 筛选出图片类型的字段（field_type=11 是图片字段）
-        const imageFields = res.data.items.filter(field => field.type === 11);
+        const imageFields = data.data.items.filter(field => field.type === 11);
         const select = document.getElementById('imageFieldSelect');
         
         if (imageFields.length === 0) {
@@ -128,68 +133,69 @@
           return;
         }
 
-        // 填充下拉框
         select.innerHTML = imageFields.map(field => 
           `<option value="${field.id}">${field.name}</option>`
         ).join('');
       } catch (err) {
         document.getElementById('contextTip').textContent = `加载字段失败：${err.message}`;
+        document.getElementById('contextTip').style.color = 'red';
         console.error('加载字段错误：', err);
       }
     }
 
-    // 获取图片上传凭证
     async function getUploadTicket(file) {
-      const res = await lark.base.api.post({
-        url: '/open-apis/drive/v1/media/upload_all/create',
+      const res = await fetch('https://open.feishu.cn/open-apis/tenant/upload/prepare', {
         method: 'POST',
-        data: {
+        headers: {
+          'Authorization': `Bearer ${globalContext.accessToken}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
           file_name: file.name,
           file_size: file.size,
           parent_type: 'base',
           parent_node: globalContext.baseId,
-          file_type: 'image'
+          file_type: file.type
+        })
+      });
+      const data = await res.json();
+      if (data.code !== 0) throw new Error(data.msg);
+      return data.data;
+    }
+
+    async function uploadImageToUrl(file, uploadUrl) {
+      await fetch(uploadUrl, {
+        method: 'PUT',
+        body: file,
+        headers: {
+          'Content-Type': 'application/octet-stream'
         }
       });
-      return res.data;
     }
 
-    // 上传图片到临时地址
-    async function uploadImageToUrl(file, uploadUrl) {
-      const formData = new FormData();
-      formData.append('file', file);
-      const res = await fetch(uploadUrl, {
-        method: 'POST',
-        body: formData
-      });
-      if (!res.ok) throw new Error(`上传图片失败：${res.statusText}`);
-      return await res.json();
-    }
-
-    // 批量写入表格记录
-    async function batchCreateRecords(imageUrls, fieldId) {
-      const records = imageUrls.map(url => ({
-        fields: {
-          [fieldId]: [
-            {
-              file_token: url.file_token,
-              url: url.download_url
-            }
-          ]
+    async function batchCreateRecords(tickets, fieldId) {
+      const requests = tickets.map(ticket => ({
+        create: {
+          table_id: globalContext.tableId,
+          fields: {
+            [fieldId]: [{ file_token: ticket }]
+          }
         }
       }));
 
-      const res = await lark.base.api.post({
-        url: `/open-apis/base/v1/bases/${globalContext.baseId}/tables/${globalContext.tableId}/records/batch_create`,
+      const res = await fetch('https://open.feishu.cn/open-apis/base/v1/batches/records', {
         method: 'POST',
-        data: {
-          records: records
-        }
+        headers: {
+          'Authorization': `Bearer ${globalContext.accessToken}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ requests })
       });
-      return res.data;
+      const data = await res.json();
+      if (data.code !== 0) throw new Error(data.msg);
+      return data;
     }
 
-    // 批量上传主逻辑
     async function handleBatchUpload() {
       const fileInput = document.getElementById('fileInput');
       const fieldSelect = document.getElementById('imageFieldSelect');
@@ -208,46 +214,35 @@
         return;
       }
 
-      // 禁用按钮，防止重复点击
       document.getElementById('uploadBtn').disabled = true;
       status.className = 'status';
       status.textContent = `开始上传${files.length}张图片...`;
 
       try {
-        // 批量处理每张图片
-        const imageUrls = [];
+        const tickets = [];
         for (let i = 0; i < files.length; i++) {
           const file = files[i];
           status.textContent = `正在上传第${i+1}/${files.length}张：${file.name}`;
           
-          // 1. 获取上传凭证
-          const ticket = await getUploadTicket(file);
-          // 2. 上传图片到临时地址
-          const uploadRes = await uploadImageToUrl(file, ticket.upload_url);
-          imageUrls.push({
-            file_token: ticket.file_token,
-            download_url: uploadRes.download_url
-          });
+          const { upload_url, ticket } = await getUploadTicket(file);
+          await uploadImageToUrl(file, upload_url);
+          tickets.push(ticket);
         }
 
-        // 3. 批量写入表格
-        await batchCreateRecords(imageUrls, fieldId);
+        await batchCreateRecords(tickets, fieldId);
 
-        // 上传成功提示
         status.className = 'status success';
-        status.textContent = `全部上传完成！共上传${files.length}张图片到表格`;
-        fileInput.value = ''; // 清空文件选择
+        status.textContent = `全部上传完成！共上传${files.length}张图片`;
+        fileInput.value = '';
       } catch (err) {
         status.className = 'status error';
         status.textContent = `上传失败：${err.message}`;
         console.error('上传错误：', err);
       } finally {
-        // 重新启用按钮
         document.getElementById('uploadBtn').disabled = false;
       }
     }
 
-    // 页面加载完成后初始化 + 绑定按钮事件
     window.onload = async () => {
       await init();
       document.getElementById('uploadBtn').addEventListener('click', handleBatchUpload);
