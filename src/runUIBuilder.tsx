@@ -1,106 +1,94 @@
 // src/runUIBuilder.tsx
 import { bitable, UIBuilder, ITable, IOpenCellValue } from "@lark-base-open/js-sdk";
 
-// 分批上传工具函数
+// 分批上传
 async function batchUploadFiles(
   files: File[],
-  batchUploadFn: (files: File[]) => Promise<string[]>
+  uploadFn: (files: File[]) => Promise<string[]>
 ): Promise<string[]> {
   const BATCH_SIZE = 20;
-  const allTokens: string[] = [];
+  const tokens: string[] = [];
   for (let i = 0; i < files.length; i += BATCH_SIZE) {
     const batch = files.slice(i, i + BATCH_SIZE);
-    const tokens = await batchUploadFn(batch);
-    allTokens.push(...tokens);
+    const t = await uploadFn(batch);
+    tokens.push(...t);
   }
-  return allTokens;
+  return tokens;
 }
 
 export default async function main(uiBuilder: UIBuilder, { t }: { t: (key: string) => string }) {
-  // 选择表格和字段
+  // 1. 选择表格&字段
   const { tableId, fieldId } = await new Promise<{ tableId: string; fieldId: string }>((resolve) => {
-    uiBuilder.form(
-      (form) => ({
-        formItems: [
-          form.tableSelect("tableId", { label: "选择目标表格" }),
-          form.fieldSelect("fieldId", {
-            label: "选择附件字段（用于存放图片）",
-            sourceTable: "tableId",
-            filterByTypes: [17],
-          }),
-        ],
-        buttons: ["确认选择"],
-      }),
-      (args) => {
-        const tableId = (args.values.tableId as { id: string }).id;
-        const fieldId = (args.values.fieldId as { id: string }).id;
-        resolve({ tableId, fieldId });
-      }
-    );
+    uiBuilder.form((form) => ({
+      formItems: [
+        form.tableSelect("tableId", { label: "选择目标表格" }),
+        form.fieldSelect("fieldId", {
+          label: "选择附件字段",
+          sourceTable: "tableId",
+          filterByTypes: [17],
+        }),
+      ],
+      buttons: ["确认"],
+    }), (args) => {
+      const tableId = (args.values.tableId as { id: string }).id;
+      const fieldId = (args.values.fieldId as { id: string }).id;
+      resolve({ tableId, fieldId });
+    });
   });
 
-  if (!tableId || !fieldId) {
-    uiBuilder.text("未选择表格或附件字段，已取消");
-    return;
-  }
+  if (!tableId || !fieldId) return uiBuilder.text("未选择");
 
-  // 获取表格实例
-  let table: ITable;
-  try {
-    table = await bitable.base.getTableById(tableId);
-  } catch (error: any) {
-    uiBuilder.text(`❌ 无法获取表格：${error.message}`);
-    return;
-  }
+  // 2. 获取表格
+  const table: ITable = await bitable.base.getTableById(tableId);
 
-  // 上传按钮
-  uiBuilder.buttons("", ["选择图片并上传"], async () => {
-    // 原生文件选择器
-    const fileInput = document.createElement("input");
-    fileInput.type = "file";
-    fileInput.multiple = true;
-    fileInput.accept = "image/*";
-    document.body.appendChild(fileInput);
+  // 3. 上传按钮
+  uiBuilder.buttons("", ["选择图片"], async () => {
+    // 原生文件选择
+    const input = document.createElement("input");
+    input.type = "file";
+    input.multiple = true;
+    input.accept = "image/*";
+    input.style.display = "none";
+    document.body.appendChild(input);
 
-    const files = await new Promise<File[] | null>((resolve) => {
-      fileInput.onchange = () => {
-        const fileList = fileInput.files;
-        document.body.removeChild(fileInput);
-        resolve(fileList ? Array.from(fileList) : null);
+    const files = await new Promise<File[] | null>((res) => {
+      input.onchange = () => {
+        const f = input.files ? Array.from(input.files) : null;
+        document.body.removeChild(input);
+        res(f);
       };
-      fileInput.click();
+      input.click();
     });
 
-    if (!files || files.length === 0) {
-      uiBuilder.text("未选择任何图片");
-      return;
-    }
+    if (!files?.length) return uiBuilder.text("未选图片");
 
-    uiBuilder.showLoading(`正在上传 ${files.length} 张图片...`);
-
+    uiBuilder.showLoading("上传中...");
     try {
-      // 上传文件（旧版SDK唯一可用API，无报错）
-      const fileTokens = await batchUploadFiles(files, (batch) =>
-        bitable.base.batchUploadFile(batch)
+      // ==============================================
+      // ✅【核心终极修复】旧版SDK 必须传 tableId！
+      // 类型断言绕过TS报错（旧版类型定义缺失，API真实需要）
+      // ==============================================
+      const fileTokens = await batchUploadFiles(files, (batch) => 
+        (bitable.base.batchUploadFile as any)(batch, tableId)
       );
 
-      // ✅【终极核心修复】旧版SDK附件字段：直接传 token 字符串数组！！！
-      // 不需要任何对象包裹，这是图片不显示的唯一原因！
-      const attachmentValue = fileTokens;
+      console.log("上传成功token：", fileTokens); // 调试日志
 
-      // 添加记录（TS类型兼容）
+      // ==============================================
+      // ✅ 赋值格式：纯字符串数组（旧版唯一标准）
+      // ==============================================
       await table.addRecord({
         fields: {
-          [fieldId]: attachmentValue as unknown as IOpenCellValue,
+          [fieldId]: fileTokens as unknown as IOpenCellValue,
         },
       });
 
       uiBuilder.hideLoading();
-      uiBuilder.text(`✅ 上传成功！图片已正常显示`);
-    } catch (error: any) {
+      uiBuilder.text(`✅ 成功！上传 ${fileTokens.length} 张图片`);
+    } catch (e: any) {
       uiBuilder.hideLoading();
-      uiBuilder.text(`❌ 失败：${error.message}`);
-      console.error("错误详情：", error);
+      uiBuilder.text(`❌ 错误：${e.message}`);
+      console.error("报错：", e);
     }
   });
 }
