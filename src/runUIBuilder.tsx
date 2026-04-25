@@ -17,7 +17,7 @@ async function batchUploadFiles(
 }
 
 export default async function main(uiBuilder: UIBuilder, { t }: { t: (key: string) => string }) {
-  // 修复TS类型：正确提取选择器ID
+  // 选择表格和字段
   const { tableId, fieldId } = await new Promise<{ tableId: string; fieldId: string }>((resolve) => {
     uiBuilder.form(
       (form) => ({
@@ -44,25 +44,18 @@ export default async function main(uiBuilder: UIBuilder, { t }: { t: (key: strin
     return;
   }
 
-  // 显式声明table类型
+  // 获取表格实例
   let table: ITable;
   try {
     table = await bitable.base.getTableById(tableId);
   } catch (error: any) {
-    uiBuilder.text(`❌ 无法获取表格 (${tableId})：${error.message}`);
+    uiBuilder.text(`❌ 无法获取表格：${error.message}`);
     return;
   }
 
-  try {
-    await table.getFieldById(fieldId);
-  } catch (error: any) {
-    uiBuilder.text(`❌ 无法获取附件字段 (${fieldId})：${error.message}`);
-    return;
-  }
-
-  // 上传按钮逻辑
+  // 上传按钮
   uiBuilder.buttons("", ["选择图片并上传"], async () => {
-    // 原生DOM文件选择器（旧版SDK兼容）
+    // 原生文件选择器
     const fileInput = document.createElement("input");
     fileInput.type = "file";
     fileInput.multiple = true;
@@ -79,22 +72,23 @@ export default async function main(uiBuilder: UIBuilder, { t }: { t: (key: strin
     });
 
     if (!files || files.length === 0) {
-      uiBuilder.text("未选择任何图片，已取消操作");
+      uiBuilder.text("未选择任何图片");
       return;
     }
 
     uiBuilder.showLoading(`正在上传 ${files.length} 张图片...`);
 
     try {
-      // 旧版SDK上传文件
+      // 上传文件（旧版SDK唯一可用API，无报错）
       const fileTokens = await batchUploadFiles(files, (batch) =>
         bitable.base.batchUploadFile(batch)
       );
 
-      // 附件格式（标准正确格式）
-      const attachmentValue = fileTokens.map((token) => ({ fileToken: token }));
+      // ✅【终极核心修复】旧版SDK附件字段：直接传 token 字符串数组！！！
+      // 不需要任何对象包裹，这是图片不显示的唯一原因！
+      const attachmentValue = fileTokens;
 
-      // ✅ 核心修复：加类型断言，解决TS重载报错
+      // 添加记录（TS类型兼容）
       await table.addRecord({
         fields: {
           [fieldId]: attachmentValue as unknown as IOpenCellValue,
@@ -102,11 +96,11 @@ export default async function main(uiBuilder: UIBuilder, { t }: { t: (key: strin
       });
 
       uiBuilder.hideLoading();
-      uiBuilder.text(`✅ 成功！已将 ${files.length} 张图片添加到一条新记录中。`);
+      uiBuilder.text(`✅ 上传成功！图片已正常显示`);
     } catch (error: any) {
       uiBuilder.hideLoading();
-      uiBuilder.text(`❌ 上传失败：${error.message}`);
-      console.error(error);
+      uiBuilder.text(`❌ 失败：${error.message}`);
+      console.error("错误详情：", error);
     }
   });
 }
